@@ -1,0 +1,167 @@
+import pandas as pd
+import random
+from tqdm import tqdm
+
+# ==========================================
+# 1. 기초 데이터 및 유니코드 상수 정의
+# ==========================================
+
+# 한글 음절 구조: [(초성 * 21) + 중성] * 28 + 종성 + 0xAC00
+CHOSUNG = ['ㄱ', 'ㄲ', 'ㄴ', 'ㄷ', 'ㄸ', 'ㄹ', 'ㅁ', 'ㅂ', 'ㅃ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅉ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ']
+JUNGSUNG = ['ㅏ', 'ㅐ', 'ㅑ', 'ㅒ', 'ㅓ', 'ㅔ', 'ㅕ', 'ㅖ', 'ㅗ', 'ㅘ', 'ㅙ', 'ㅚ', 'ㅛ', 'ㅜ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅠ', 'ㅡ', 'ㅢ', 'ㅣ']
+JONGSUNG = ['', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ', 'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ', 'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ']
+
+# 변환 매핑 테이블
+DOUBLE_MAP = {'ㄱ': 'ㄲ', 'ㄷ': 'ㄸ', 'ㅂ': 'ㅃ', 'ㅅ': 'ㅆ', 'ㅈ': 'ㅉ'} 
+STROKE_ADD_CON = {'ㄱ': 'ㅋ', 'ㄷ': 'ㅌ', 'ㅂ': 'ㅍ', 'ㅈ': 'ㅊ'}       
+STROKE_REMOVE = {
+    'ㅋ': 'ㄱ', 'ㅌ': 'ㄷ', 'ㅍ': 'ㅂ', 'ㅊ': 'ㅈ', 
+    'ㅑ': 'ㅏ', 'ㅕ': 'ㅓ', 'ㅛ': 'ㅗ', 'ㅠ': 'ㅜ', 'ㅒ': 'ㅐ', 'ㅖ': 'ㅔ'
+}
+VOWEL_EXTEND = {'ㅣ': ['ㅏ', 'ㅓ'], 'ㅏ': ['ㅑ'], 'ㅓ': ['ㅕ'], 'ㅗ': ['ㅛ'], 'ㅜ': ['ㅠ']}
+
+# ==========================================
+# 2. 한글 자소 분해 및 합성 로직
+# ==========================================
+
+def decompose(char):
+    """한글 음절을 초/중/종성 리스트로 분해 (예: '강' -> ['ㄱ', 'ㅏ', 'ㅇ'])"""
+    if not '가' <= char <= '힣': return None
+    code = ord(char) - 0xAC00
+    jong = code % 28
+    jung = (code // 28) % 21
+    cho = (code // 28) // 21
+    return [CHOSUNG[cho], JUNGSUNG[jung], JONGSUNG[jong]]
+
+def assemble(cho, jung, jong):
+    """초/중/종성 리스트를 다시 한글 음절로 합성 (예: ['ㄱ', 'ㅏ', 'ㅇ'] -> '강')"""
+    try:
+        cho_idx = CHOSUNG.index(cho)
+        jung_idx = JUNGSUNG.index(jung)
+        jong_idx = JONGSUNG.index(jong)
+        return chr(0xAC00 + (cho_idx * 21 + jung_idx) * 28 + jong_idx)
+    except ValueError:
+        return "" # 유효하지 않은 조합 시 빈 문자열 반환
+
+# 
+
+# ==========================================
+# 3. Filter 1: 음운 변화 규칙 (고급 발음 변환)
+# ==========================================
+
+def apply_advanced_pronunciation(text):
+    """연음, 비음, 유음화 등 한국어 발음 법칙을 로직으로 구현"""
+    chars = [decompose(c) if '가' <= c <= '힣' else c for c in text]
+    
+    for i in range(len(chars) - 1):
+        curr, nxt = chars[i], chars[i+1]
+        if not isinstance(curr, list) or not isinstance(nxt, list): continue
+        
+        # 1. 연음화: 받침 + ㅇ -> 받침 이동 (예: 좋아 -> 조하 -> 조아)
+        if curr[2] != '' and nxt[0] == 'ㅇ' and curr[2] in CHOSUNG:
+            nxt[0] = curr[2]
+            curr[2] = ''
+            
+        # 2. 격음화: ㄱ,ㄷ,ㅂ,ㅈ + ㅎ -> ㅋ,ㅌ,ㅍ,ㅊ (예: 입학 -> 이팍)
+        if curr[2] in ['ㄱ', 'ㄷ', 'ㅂ', 'ㅈ'] and nxt[0] == 'ㅎ':
+            nxt[0] = STROKE_ADD_CON[curr[2]]; curr[2] = ''
+        elif curr[2] == 'ㅎ' and nxt[0] in ['ㄱ', 'ㄷ', 'ㅂ', 'ㅈ']:
+            nxt[0] = STROKE_ADD_CON[nxt[0]]; curr[2] = ''
+            
+        # 3. 비음화: ㄱ,ㄷ,ㅂ + ㄴ,ㅁ -> ㅇ,ㄴ,ㅁ (예: 국물 -> 궁물)
+        if curr[2] in ['ㄱ', 'ㄷ', 'ㅂ'] and nxt[0] in ['ㄴ', 'ㅁ']:
+            curr[2] = {'ㄱ':'ㅇ', 'ㄷ':'ㄴ', 'ㅂ':'ㅁ'}[curr[2]]
+
+    return "".join([assemble(c[0], c[1], c[2]) if isinstance(c, list) else c for c in chars])
+
+# ==========================================
+# 4. 통합 난독화 엔진 (60:20:20 난이도 적용)
+# ==========================================
+
+def obfuscate_master(text):
+    """정해진 비율에 따라 3단계 난이도로 난독화 수행"""
+    prob = random.random()
+    
+    # 난이도 설정 (High 60%, Medium 20%, Low 20%)
+    if prob < 0.6:
+        cfg = {'pron': 0.9, 'twin': 0.9, 's_add': 0.8, 's_rem': 0.35, 'v_ext': 0.7, 'b_add': 0.25}
+    elif prob < 0.8:
+        cfg = {'pron': 0.5, 'twin': 0.4, 's_add': 0.3, 's_rem': 0.1, 'v_ext': 0.3, 'b_add': 0.1}
+    else:
+        cfg = {'pron': 0.2, 'twin': 0.1, 's_add': 0.1, 's_rem': 0.02, 'v_ext': 0.1, 'b_add': 0.02}
+
+    # 1단계: 발음 변환 필터 (단어 단위 비율)
+    words = text.split()
+    p_size = round(len(words) * cfg['pron'])
+    if p_size > 0:
+        for idx in random.sample(range(len(words)), p_size):
+            words[idx] = apply_advanced_pronunciation(words[idx])
+    
+    text = " ".join(words)
+    chars_list = [decompose(c) if '가' <= c <= '힣' else c for c in text]
+    def get_cands(cond): return [i for i, c in enumerate(chars_list) if isinstance(c, list) and cond(c)]
+
+    # 2단계: 자소 변환 필터 (비율 기반 무작위 샘플링)
+    # [쌍자음, 획 추가, 획 제거, 모음 확장, 받침 추가 순차 적용]
+    for key, ratio in [('twin', cfg['twin']), ('s_add', cfg['s_add']), ('s_rem', cfg['s_rem']), ('v_ext', cfg['v_ext']), ('b_add', cfg['b_add'])]:
+        idx = []
+        if key == 'twin': idx = get_cands(lambda c: c[0] in DOUBLE_MAP)
+        elif key == 's_add': idx = get_cands(lambda c: c[0] in STROKE_ADD_CON)
+        elif key == 's_rem': idx = get_cands(lambda c: True)
+        elif key == 'v_ext': idx = get_cands(lambda c: c[1] in VOWEL_EXTEND)
+        elif key == 'b_add': idx = get_cands(lambda c: c[2] == '')
+        
+        if idx:
+            count = round(len(idx) * ratio)
+            if count > 0:
+                for i in random.sample(idx, count):
+                    if key == 'twin': chars_list[i][0] = DOUBLE_MAP[chars_list[i][0]]
+                    elif key == 's_add': chars_list[i][0] = STROKE_ADD_CON[chars_list[i][0]]
+                    elif key == 's_rem':
+                        c = chars_list[i]
+                        rem = [j for j, p in enumerate(c) if p in STROKE_REMOVE]
+                        if rem: c[random.choice(rem)] = STROKE_REMOVE[c[random.choice(rem)]]
+                    elif key == 'v_ext': chars_list[i][1] = random.choice(VOWEL_EXTEND[chars_list[i][1]])
+                    elif key == 'b_add': chars_list[i][2] = random.choice(JONGSUNG[1:])
+
+    return "".join([assemble(c[0], c[1], c[2]) if isinstance(c, list) else c for c in chars_list])
+
+# ==========================================
+# 5. 실행 및 파일 저장 (1:10 증강 버전)
+# ==========================================
+
+try:
+    train_df = pd.read_csv('train.csv')
+    print(f"원본 데이터 {len(train_df)}건 로드 완료. 증강을 시작합니다...")
+
+    augmented_rows = []
+
+    # 원본 데이터의 각 행을 반복
+    for _, row in tqdm(train_df.iterrows(), total=len(train_df)):
+        original_id = row['ID']
+        original_output = row['output']
+        
+        # 하나의 output에 대해 10번 반복하여 서로 다른 input 생성
+        for i in range(10):
+            # 난독화 엔진 호출 (매번 다른 난이도와 무작위성이 적용됨)
+            new_input = obfuscate_master(original_output)
+            
+            # 새로운 행 데이터 생성 (ID 뒤에 _0, _1... 접미사 추가)
+            augmented_rows.append({
+                'ID': f"{original_id}_{i}",
+                'input': new_input,
+                'output': original_output
+            })
+
+    # 리스트를 새로운 데이터프레임으로 변환
+    augmented_df = pd.DataFrame(augmented_rows)
+
+    # 결과 저장
+    output_file = 'my_augmented_train_x10.csv'
+    augmented_df.to_csv(output_file, index=False, encoding='utf-8-sig')
+    
+    print(f"성공! 데이터가 {len(train_df)}건에서 {len(augmented_df)}건으로 증강되었습니다.")
+    print(f"파일이 '{output_file}'로 저장되었습니다.")
+    
+except FileNotFoundError:
+    print("Error: 'train.csv' 파일을 찾을 수 없습니다.")
